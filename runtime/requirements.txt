@@ -1,0 +1,4 @@
+aiohttp==3.10.11
+peewee==3.17.9
+beautifulsoup4==4.12.3
+openpyxl==3.1.5
