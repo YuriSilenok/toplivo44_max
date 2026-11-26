@@ -1,1 +1,13 @@
 *{box-sizing:border-box}body{margin:0;color:#192e40;background:#f5f7fa;font:16px system-ui,sans-serif}header,footer{padding:16px 22px}h1{font-size:24px;margin:0 0 6px}p{margin:6px 0 12px}.controls{display:flex;gap:10px;align-items:end;flex-wrap:wrap}label{display:grid;gap:5px;font-size:14px}input,select,button{font:inherit;border:1px solid #b9c7d4;border-radius:8px;padding:10px;background:white;color:#192e40}input{width:min(330px,85vw)}button{cursor:pointer;background:#e6f0ff}button:disabled{opacity:.5;cursor:default}main{display:grid;grid-template-columns:minmax(0,2fr) minmax(290px,1fr);height:65vh;min-height:420px}#map{height:100%;z-index:0}#results{overflow:auto;padding:12px}.card{background:#fff;border-radius:10px;padding:14px;margin-bottom:10px;border:1px solid #dce3eb}.card h2{font-size:17px;margin:0 0 6px}.card p{font-size:14px;white-space:pre-line}.card a{display:inline-block;margin:8px 12px 0 0}a{color:#1254a3}.warning{color:#8a4b00}footer{font-size:13px}.leaflet-popup-content{white-space:normal}button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible{outline:3px solid #467bc8;outline-offset:2px}@media(max-width:700px){header{padding:14px}main{display:flex;flex-direction:column;height:auto;min-height:0}#map{height:48vh;min-height:300px}#results{max-height:55vh}.controls{gap:8px}h1{font-size:21px}}
+/* Keep the map viewport and popup content independent of sidebar card layout. */
+body{min-height:100vh;min-height:100dvh;display:flex;flex-direction:column}
+main{flex:1;min-height:360px;height:auto;grid-template-columns:minmax(0,1fr) minmax(320px,420px)}
+#map{min-height:0}#results{min-width:0;min-height:0;overscroll-behavior:contain}
+@media(min-width:701px){body{height:100vh;height:100dvh;overflow:hidden}main{min-height:0}footer{flex-shrink:0}}
+.card{overflow-wrap:anywhere;line-height:1.45}.card p{margin:7px 0}.card button{margin-right:12px}
+.point-popup .leaflet-popup-content{width:280px!important;max-width:calc(100vw - 80px);margin:16px;line-height:1.45}
+.point-popup .card{width:100%;min-width:0;border:0;border-radius:0;padding:0;margin:0;background:transparent}
+.point-popup .card h2{padding-right:14px}.point-popup .card p{font-size:14px;margin:8px 0}
+.point-popup .leaflet-popup-content-wrapper{max-width:calc(100vw - 40px)}
+.point-popup .leaflet-popup-scrolled{border:0;overscroll-behavior:contain}
+@media(max-width:700px){main{display:flex;flex:none;min-height:0}#map{height:48vh;min-height:280px;flex:none}#results{max-height:none;overflow:visible}.controls label:first-child{width:100%}input{width:100%}.point-popup .leaflet-popup-content{width:260px!important}}

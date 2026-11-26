@@ -10,7 +10,11 @@ function card(p,popup=false){
  if(nearest&&origin)box.append(node('p','Расстояние: '+(distance(p)/1000).toFixed(2)+' км'));
  if(kind==='fuel'){
   const brands=el('fuel').value?[el('fuel').value]:['АИ-92','АИ-95','ДТ'];
-  for(const brand of brands){const f=p.fuels[brand];box.append(node('p',brand+': '+(!f?'нет сведений':f.available?'есть'+(f.price!=null?' · '+f.price+' ₽':''):'наличие не подтверждено')));if(f){box.append(node('p','Обновлено источником: '+f.updated_text+' МСК'));if(f.stale)box.append(node('p','Сведения старше часа; наличие могло измениться.','warning'));}}
+  const reports=brands.map(brand=>p.fuels[brand]).filter(Boolean);
+  const sharedDate=reports.length&&reports.every(f=>f.updated_text===reports[0].updated_text);
+  for(const brand of brands){const f=p.fuels[brand];box.append(node('p',brand+': '+(!f?'нет сведений':f.available?'есть'+(f.price!=null?' · '+f.price+' ₽':''):'наличие не подтверждено')));if(f&&!sharedDate)box.append(node('p','Обновлено: '+f.updated_text+' МСК'));}
+  if(sharedDate)box.append(node('p','Обновлено источником: '+reports[0].updated_text+' МСК'));
+  if(reports.some(f=>f.stale))box.append(node('p','Сведения старше часа; наличие могло измениться.','warning'));
   if(p.queue)box.append(node('p',p.queue.trim().toLowerCase()==='нет'?'Очереди нет.':'Очередь: '+p.queue));
   if(p.restrictions)box.append(node('p','Ограничения объёма в одни руки: '+p.restrictions));
  }
@@ -22,7 +26,7 @@ function render(){
  let shown=points.filter(p=>(p.name+' '+p.address).toLocaleLowerCase('ru').replaceAll('ё','е').includes(query)&&(!brand||p.fuels?.[brand]?.available));
  if(nearest&&origin)shown=shown.sort((a,b)=>distance(a)-distance(b)).slice(0,3);
  el('results').replaceChildren();if(layer)layer.clearLayers();markers.clear();
- for(const p of shown){el('results').append(card(p));if(map){const m=L.circleMarker([p.latitude,p.longitude],{radius:8,color:kind==='fuel'&&!Object.values(p.fuels).some(f=>f.available)?'#737e8a':'#1765b5',fillOpacity:.8}).bindPopup(card(p,true)).addTo(layer);markers.set(p.id,m);}}
+ for(const p of shown){el('results').append(card(p));if(map){const m=L.circleMarker([p.latitude,p.longitude],{radius:8,color:kind==='fuel'&&!Object.values(p.fuels).some(f=>f.available)?'#737e8a':'#1765b5',fillOpacity:.8}).bindPopup(card(p,true),{minWidth:240,maxWidth:340,maxHeight:320,className:'point-popup',autoPanPadding:[20,20]}).addTo(layer);markers.set(p.id,m);}}
  if(map&&shown.length){map.fitBounds(shown.map(p=>[p.latitude,p.longitude]),{padding:[24,24],maxZoom:15});}
  status(shown.length?'Показано '+shown.length+' из '+points.length+(nearest?' · три ближайшие по выбранным условиям':''):'По выбранным условиям точек нет.');
  if(!map)status(el('status').textContent+' Подложка карты недоступна; используйте список и ссылки.');
