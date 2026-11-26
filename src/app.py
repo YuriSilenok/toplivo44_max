@@ -167,6 +167,9 @@ def menu(uid):
     if 'admin' in r:
         rows += [[button('Создать ссылку на оператора')], [button('Создать ссылку на администратора')],
                  [button('Снять оператора')], [button('Снять администратора')], [button('Список ролей')]]
+    if KIND in ['fuel', 'wifi'] and os.environ.get('MAP_ENABLED') == '1':
+        rows.insert(0, [{'type': 'link', 'text': 'Карта всех точек',
+                         'url': 'https://xn--e1afhclgq.xn--p1ai/max-bots/'+KIND+'/map'}])
     return rows
 
 
@@ -676,6 +679,9 @@ async def lifecycle(app):
 
 app = web.Application(client_max_size=1024*1024)
 app.router.add_post('/webhook', receive)
+if KIND in ['fuel', 'wifi'] and os.environ.get('MAP_ENABLED') == '1':
+    from public_map import register_routes
+    register_routes(app, KIND)
 app.cleanup_ctx.append(lifecycle)
 if __name__ == '__main__':
     sys.modules['app'] = sys.modules[__name__]
