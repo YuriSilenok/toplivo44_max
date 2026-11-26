@@ -42,6 +42,6 @@ el('nearby').onclick=()=>{
 (async()=>{try{
  const response=await fetch(location.pathname.replace(/\/$/,'')+'/data');if(!response.ok)throw Error('HTTP '+response.status);const data=await response.json();kind=data.kind;points=data.points;
  document.title=el('title').textContent=kind==='fuel'?'АЗС Костромской области':'Бесплатный Wi-Fi';
- if(window.L){map=L.map('map').setView([57.77,40.93],8);layer=L.layerGroup().addTo(map);L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'}).addTo(map).on('tileerror',()=>status('Подложка карты временно недоступна. Точки и список доступны.'));}
+ if(window.L){map=L.map('map').setView([57.77,40.93],8);map.attributionControl.setPrefix('Leaflet');layer=L.layerGroup().addTo(map);L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'}).addTo(map).on('tileerror',()=>status('Подложка карты временно недоступна. Точки и список доступны.'));}
  el('nearby').disabled=false;el('all').disabled=false;render();
  }catch(error){status('Не удалось загрузить точки. Обновите страницу позже.');}})();

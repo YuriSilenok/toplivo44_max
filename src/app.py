@@ -153,7 +153,8 @@ def geo():
 def menu(uid):
     r = roles(uid)
     if KIND == 'labor':
-        return [[button('Создать приглашение', '/invite')]] if 'admin' in r else []
+        return [[button('Создать приглашение', '/invite')],
+                [button('Снять администратора')], [button('Список ролей')]] if 'admin' in r else []
     if KIND == 'wifi':
         rows = []
         if r & {'operator', 'admin'}:
@@ -286,8 +287,11 @@ def admin_state(uid, text, s, data):
     if s == 'remove_role':
         if not text.isdigit():
             raise ValueError('ID должен быть числом.')
+        if data['role'] not in roles(text):
+            send(uid, 'У пользователя нет указанной роли. Введите другой ID или нажмите «Отмена».')
+            return True
         state(uid, 'remove_confirm', {'role': data['role'], 'target': text})
-        send(uid, 'Снять роль {} у пользователя {}?'.format(data['role'], text), [[button('Да, снять'), button('Отмена')]])
+        send(uid, 'Снять роль {} у пользователя {}?'.format(data['role'], text), [[button('Да, снять')], [button('Отмена')]])
     elif s == 'remove_confirm':
         if text != 'Да, снять':
             raise ValueError('Нажмите «Да, снять» или «Отмена».')
@@ -646,6 +650,12 @@ async def worker(app):
             outgoing = Outbox.select().where(Outbox.due <= time.time()).order_by(Outbox.id).first()
             if outgoing:
                 payload = json.loads(outgoing.body)
+                case_material = payload.get('text', '').startswith('Заявление №') and ('\nСодержание:' in payload.get('text', '') or '\nКонтакты предоставлены' in payload.get('text', ''))
+                if KIND == 'labor' and case_material and 'admin' not in roles(outgoing.uid):
+                    # Retain queued materials, but never deliver them without current access.
+                    outgoing.due = time.time()+3600
+                    outgoing.save()
+                    continue
                 edit_mid = payload.pop('_edit_mid', None)
                 path = '/answers' if not outgoing.uid else '/messages'
                 params = {'message_id': edit_mid} if edit_mid else ({'user_id': outgoing.uid} if outgoing.uid else {'callback_id': payload.pop('callback_id')})
