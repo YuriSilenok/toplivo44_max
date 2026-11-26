@@ -11,3 +11,5 @@ main{flex:1;min-height:360px;height:auto;grid-template-columns:minmax(0,1fr) min
 .point-popup .leaflet-popup-content-wrapper{max-width:calc(100vw - 40px)}
 .point-popup .leaflet-popup-scrolled{border:0;overscroll-behavior:contain}
 @media(max-width:700px){main{display:flex;flex:none;min-height:0}#map{height:48vh;min-height:280px;flex:none}#results{max-height:none;overflow:visible}.controls label:first-child{width:100%}input{width:100%}.point-popup .leaflet-popup-content{width:260px!important}}
+
+[hidden]{display:none!important}

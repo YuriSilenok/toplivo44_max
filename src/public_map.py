@@ -7,12 +7,28 @@ from zoneinfo import ZoneInfo
 
 from aiohttp import web
 
+CATEGORIES = {'rtk': 'РТК', 'szo': 'СЗО', 'additional': 'Дополнительные точки'}
+
+
+def wifi_category(point, extra):
+    category = extra.get('category')
+    if category in CATEGORIES:
+        return category
+    # Stable import IDs identify the existing Rostelecom registry.
+    return 'rtk' if point.source.startswith('import:rtk-') else 'additional'
+
 
 def register_routes(application, kind):
     assets = Path(__file__).parent / 'map'
 
     async def page(request):
-        return web.FileResponse(assets / 'index.html', headers={
+        title = 'АЗС Костромской области' if kind == 'fuel' else 'Бесплатный Wi-Fi'
+        if kind == 'fuel':
+            control = '<label>Топливо<select id="filter"><option value="">Все АЗС</option><option>АИ-92</option><option>АИ-95</option><option>ДТ</option></select></label>'
+        else:
+            control = '<label>Категория<select id="filter"><option value="">Все точки</option>' + ''.join('<option value="{}">{}</option>'.format(key, value) for key, value in CATEGORIES.items()) + '</select></label>'
+        html = (assets / 'index.html').read_text(encoding='utf-8-sig').replace('__TITLE__', title).replace('__FILTER__', control)
+        return web.Response(text=html, content_type='text/html', headers={
             'Cache-Control': 'no-cache', 'X-Content-Type-Options': 'nosniff',
             'Referrer-Policy': 'strict-origin-when-cross-origin'})
 
@@ -28,8 +44,8 @@ def register_routes(application, kind):
         for point in Point.select():
             row = dict(id=point.id, name=point.name, address=point.address,
                        latitude=point.lat, longitude=point.lon)
+            extra = json.loads(point.extra)
             if kind == 'fuel':
-                extra = json.loads(point.extra)
                 row['queue'] = extra.get('queue_text', '')
                 row['restrictions'] = extra.get('restrictions', '')
                 row['fuels'] = {}
@@ -39,6 +55,9 @@ def register_routes(application, kind):
                         price=status.get('price'), updated=report.updated,
                         updated_text=datetime.fromtimestamp(report.updated, ZoneInfo('Europe/Moscow')).strftime('%d.%m.%Y %H:%M'),
                         stale=now-report.updated > 3600)
+            else:
+                row['category'] = wifi_category(point, extra)
+                row['category_label'] = CATEGORIES[row['category']]
             points.append(row)
         return web.json_response(dict(kind=kind, points=points), headers={
             'Cache-Control': 'public, max-age=30', 'X-Content-Type-Options': 'nosniff'})

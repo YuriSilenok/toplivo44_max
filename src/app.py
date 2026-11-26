@@ -372,6 +372,13 @@ def wifi(uid, text, attachments):
                 raise ValueError('Нужны 7 полей; название, адрес и SSID обязательны.')
             lat, lon = coords(parts[2]+' '+parts[3])
             values = dict(name=parts[0], address=parts[1], lat=lat, lon=lon, extra=json.dumps(dict(zip(['ssid','password','comment'], parts[4:])), ensure_ascii=False))
+            if s == 'point_edit':
+                existing = Point.get_by_id(data['id'])
+                category = json.loads(existing.extra).get('category')
+                if category in ['rtk', 'szo', 'additional']:
+                    extra = json.loads(values['extra'])
+                    extra['category'] = category
+                    values['extra'] = json.dumps(extra, ensure_ascii=False)
             if s == 'point_add':
                 p = Point.create(**values)
                 result = 'Точка Wi-Fi добавлена. ID: {}.'.format(p.id)

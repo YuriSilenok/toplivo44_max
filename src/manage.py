@@ -44,8 +44,16 @@ elif a.action=='import-wifi':
             lat,lon=float(row['latitude']),float(row['longitude'])
             if not (-90<=lat<=90 and -180<=lon<=180): raise ValueError('Invalid coordinates')
             source='import:'+str(row['id'])
-            values=dict(name=row['name'],address=row['address'],lat=lat,lon=lon,extra=json.dumps({k:row.get(k,'') for k in ['ssid','password','comment']},ensure_ascii=False))
             old=Point.get_or_none(Point.source==source)
+            extra={k:row.get(k,'') for k in ['ssid','password','comment']}
+            category=row.get('category')
+            if category is not None and category not in ['rtk','szo','additional']:
+                raise ValueError('category must be rtk, szo or additional')
+            if category is None and old:
+                category=json.loads(old.extra).get('category')
+            if category is not None:
+                extra['category']=category
+            values=dict(name=row['name'],address=row['address'],lat=lat,lon=lon,extra=json.dumps(extra,ensure_ascii=False))
             Point.update(**values).where(Point.id==old.id).execute() if old else Point.create(source=source,**values)
     print('Imported',len(rows),'Wi-Fi points')
 elif a.action=='import-fuel':
