@@ -1,6 +1,7 @@
 'use strict';
 const el=id=>document.getElementById(id);
-let points=[],kind='',map,layer,nearest=false,origin=null,positionMarker;
+let points=[],kind='',map,layer,nearest=false,origin=null,positionMarker,activePopup;
+function popupHeight(){return Math.max(80,Math.min(320,(el('map').clientHeight||400)-80));}
 const markers=new Map();
 const status=text=>{el('status').textContent=text;};
 function node(tag,text,cls){const n=document.createElement(tag);n.textContent=text;if(cls)n.className=cls;return n;}
@@ -28,7 +29,7 @@ function render(){
  let shown=points.filter(p=>(p.name+' '+p.address).toLocaleLowerCase('ru').replaceAll('ё','е').includes(query)&&(!filter||(kind==='fuel'?p.fuels?.[filter]?.available:p.category===filter)));
  if(nearest&&origin)shown=shown.sort((a,b)=>distance(a)-distance(b)).slice(0,3);
  el('results').replaceChildren();if(layer)layer.clearLayers();markers.clear();
- for(const p of shown){el('results').append(card(p));if(map){const m=L.circleMarker([p.latitude,p.longitude],{radius:8,color:kind==='fuel'&&!Object.values(p.fuels).some(f=>f.available)?'#737e8a':'#1765b5',fillOpacity:.8}).bindPopup(card(p,true),{minWidth:240,maxWidth:340,maxHeight:320,className:'point-popup',autoPanPadding:[20,20]}).addTo(layer);markers.set(p.id,m);}}
+ for(const p of shown){el('results').append(card(p));if(map){const m=L.circleMarker([p.latitude,p.longitude],{radius:8,color:kind==='fuel'&&!Object.values(p.fuels).some(f=>f.available)?'#737e8a':'#1765b5',fillOpacity:.8}).bindPopup(card(p,true),{minWidth:180,maxWidth:300,maxHeight:popupHeight(),className:'point-popup',autoPanPadding:[12,12]}).addTo(layer);markers.set(p.id,m);}}
  if(map&&shown.length){map.fitBounds(shown.map(p=>[p.latitude,p.longitude]),{padding:[24,24],maxZoom:15});}
  status(shown.length?'Показано '+shown.length+' из '+points.length+(nearest?' · три ближайшие по выбранным условиям':''):'По выбранным условиям точек нет.');
  if(!map)status(el('status').textContent+' Подложка карты недоступна; используйте список и ссылки.');
@@ -44,5 +45,6 @@ el('nearby').onclick=()=>{
  const response=await fetch(location.pathname.replace(/\/$/,'')+'/data');if(!response.ok)throw Error('HTTP '+response.status);const data=await response.json();kind=data.kind;points=data.points;
  document.title=el('title').textContent=kind==='fuel'?'АЗС Костромской области':'Бесплатный Wi-Fi';
  if(window.L){map=L.map('map').setView([57.77,40.93],8);map.attributionControl.setPrefix('Leaflet');layer=L.layerGroup().addTo(map);L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'}).addTo(map).on('tileerror',()=>status('Подложка карты временно недоступна. Точки и список доступны.'));}
+ if(map){map.on('popupopen',event=>{activePopup=event.popup;activePopup.options.maxHeight=popupHeight();activePopup.update();});map.on('popupclose',()=>{activePopup=null;});const resize=()=>{map.invalidateSize({pan:false});if(activePopup){activePopup.options.maxHeight=popupHeight();activePopup.update();}};if(window.ResizeObserver){new ResizeObserver(resize).observe(el('map'));}else{window.addEventListener('resize',resize);}}
  el('nearby').disabled=false;el('all').disabled=false;render();
  }catch(error){status('Не удалось загрузить точки. Обновите страницу позже.');}})();

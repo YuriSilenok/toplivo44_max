@@ -6,7 +6,10 @@ import os
 import ssl
 import tempfile
 import zipfile
+import calendar
+import time
 from datetime import datetime
+from pathlib import Path
 from urllib.parse import quote, urljoin, urlsplit
 from zoneinfo import ZoneInfo
 
@@ -47,7 +50,7 @@ def show_case(uid, number, offset=0):
     send(uid, 'Заявление №{}: сообщения {}–{} из {}.'.format(number, offset+1, min(offset+10, count), count), rows)
 
 
-async def download_photo(client, url, target):
+async def download_media(client, url, target, kind='image'):
     for redirect in range(4):
         if not https_url(url):
             raise ValueError('Invalid photo URL')
@@ -63,14 +66,17 @@ async def download_photo(client, url, target):
                 continue
             response.raise_for_status()
             media_type = response.headers.get('Content-Type', '').split(';')[0].lower()
-            suffix = {'image/jpeg': '.jpg', 'image/png': '.png', 'image/gif': '.gif', 'image/webp': '.webp',
-                      'image/heic': '.heic', 'image/tiff': '.tiff', 'image/bmp': '.bmp'}.get(media_type)
+            formats = {'image/jpeg': '.jpg', 'image/png': '.png', 'image/gif': '.gif', 'image/webp': '.webp',
+                       'image/heic': '.heic', 'image/tiff': '.tiff', 'image/bmp': '.bmp'} if kind == 'image' else {
+                       'video/mp4': '.mp4', 'video/webm': '.webm', 'video/quicktime': '.mov',
+                       'video/x-matroska': '.mkv', 'application/octet-stream': '.mp4'}
+            suffix = formats.get(media_type)
             if suffix is None:
                 raise ValueError('Unsupported photo content type')
             size = 0
             async for chunk in response.content.iter_chunked(65536):
                 size += len(chunk)
-                if size > 50*1024*1024:
+                if size > (50 if kind == 'image' else 250)*1024*1024:
                     raise ValueError('Photo too large')
                 target.write(chunk)
             if not size:
@@ -79,41 +85,71 @@ async def download_photo(client, url, target):
     raise ValueError('Too many photo redirects')
 
 
-async def export_archive(api_client, api_url, bot_token):
+def period_start(end, months):
+    date = datetime.fromtimestamp(end, ZoneInfo('Europe/Moscow'))
+    total = date.year*12+date.month-1-months
+    year, month = total//12, total % 12+1
+    return date.replace(year=year, month=month, day=min(date.day, calendar.monthrange(year, month)[1])).timestamp()
+
+
+async def video_url(api_client, api_url, bot_token, item):
+    token = item.get('payload', {}).get('token')
+    if token:
+        async with api_client.get(api_url+'/videos/'+quote(token, safe=''), headers={'Authorization': bot_token}) as response:
+            if response.status == 200:
+                urls = (await response.json()).get('urls') or {}
+                for quality in ['mp4_480', 'mp4_360', 'mp4_720', 'mp4_1080', 'mp4_240', 'mp4_144']:
+                    if https_url(urls.get(quality)):
+                        return urls[quality]
+    return item.get('_download_url') or item.get('payload', {}).get('url')
+
+
+async def export_archive(api_client, api_url, bot_token, months=12, end=None):
     from app import CaseMessage
+    if not isinstance(months, int) or not 1 <= months <= 12:
+        raise ValueError('Invalid report period')
+    end = float(end or time.time())
+    start = period_start(end, months)
     connector = aiohttp.TCPConnector(resolver=PublicResolver(), use_dns_cache=False,
         ssl=ssl.create_default_context(cafile=os.environ.get('CA_BUNDLE') or None))
     async with aiohttp.ClientSession(connector=connector, timeout=aiohttp.ClientTimeout(total=300)) as media_client:
         with tempfile.TemporaryFile() as archive:
-            sections, previous = [], None
+            sections, previous, navigation = [], None, []
+            photos = videos = unavailable = 0
             # Materialize metadata to keep a stable snapshot while awaiting downloads.
-            messages = list(CaseMessage.select().order_by(CaseMessage.case_id, CaseMessage.id))
+            messages = list(CaseMessage.select().where((CaseMessage.sent_at >= start) & (CaseMessage.sent_at <= end)).order_by(CaseMessage.case_id, CaseMessage.sent_at, CaseMessage.id))
+            unknown_dates = CaseMessage.select().where(CaseMessage.sent_at == 0).count()
             with zipfile.ZipFile(archive, 'w', compression=zipfile.ZIP_DEFLATED) as output:
                 for message in messages:
                     if message.case_id != previous:
-                        sections.append('<h1>Заявление №{}</h1>'.format(message.case_id))
+                        if previous is not None:
+                            sections.append('</section>')
+                        sections.append('<section class="case" id="case-{0}" data-case="{0}"><div class="case-heading"><span class="eyebrow">Материалы обращения</span><h2>Заявление №{0}</h2></div>'.format(message.case_id))
+                        navigation.append('<a href="#case-{0}">№{0}</a>'.format(message.case_id))
                         previous = message.case_id
-                    sections.append('<article><h2>Отправлено: {}</h2><pre>{}</pre>'.format(html.escape(stamp(message.sent_at)), html.escape(message_text(message))))
+                    sections.append('<article class="message"><div class="message-date">{}</div><pre>{}</pre><div class="media-grid">'.format(html.escape(stamp(message.sent_at)), html.escape(message_text(message))))
                     media = json.loads(message.media)
-                    fresh_photos = []
-                    if any(item.get('type') == 'image' for item in media) and message.source_mid:
+                    fresh = {'image': [], 'video': []}
+                    if media and message.source_mid:
                         async with api_client.get(api_url+'/messages/'+quote(message.source_mid, safe=''), headers={'Authorization': bot_token}) as response:
                             if response.status == 200:
                                 original = await response.json()
-                                fresh_photos = [item for item in (original.get('body') or {}).get('attachments') or [] if item.get('type') == 'image']
-                    photo_index = 0
+                                for attached in (original.get('body') or {}).get('attachments') or []:
+                                    if attached.get('type') in fresh:
+                                        fresh[attached['type']].append(attached)
+                    indices = {'image': 0, 'video': 0}
                     for index, item in enumerate(media):
-                        if item.get('type') == 'video':
-                            sections.append('<p>Видео. Время отправки: {}. Видеофайл в архив не включён.</p>'.format(html.escape(stamp(message.sent_at))))
-                        elif item.get('type') == 'image':
-                            url = item.get('_export_url') or item.get('payload', {}).get('url')
-                            if photo_index < len(fresh_photos):
-                                url = fresh_photos[photo_index].get('payload', {}).get('url') or url
-                            photo_index += 1
+                        kind = item.get('type')
+                        if kind in ['image', 'video']:
+                            refreshed = fresh[kind][indices[kind]] if indices[kind] < len(fresh[kind]) else item
+                            indices[kind] += 1
+                            url = (refreshed.get('payload', {}).get('url') or item.get('_export_url') or item.get('payload', {}).get('url')) if kind == 'image' else await video_url(api_client, api_url, bot_token, refreshed)
+                            if not url and kind == 'video':
+                                url = item.get('_download_url') or item.get('payload', {}).get('url')
                             try:
                                 with tempfile.TemporaryFile() as photo:
-                                    suffix = await download_photo(media_client, url, photo)
-                                    name = 'statement-{}/photo-{}-{}{}'.format(message.case_id, message.id, index+1, suffix)
+                                    suffix = await download_media(media_client, url, photo, kind)
+                                    name = 'statement-{}/{}-{}-{}{}'.format(message.case_id, 'photo' if kind == 'image' else 'video', message.id, index+1, suffix)
                                     photo.seek(0)
                                     with output.open(name, 'w') as target:
                                         while True:
@@ -121,14 +157,32 @@ async def export_archive(api_client, api_url, bot_token):
                                             if not chunk:
                                                 break
                                             target.write(chunk)
-                                if suffix in ['.jpg', '.png', '.gif', '.webp', '.bmp']:
-                                    sections.append('<p><a href="{0}">Фото</a></p><img src="{0}" alt="Фото к заявлению">'.format(name))
+                                label = 'Фото' if kind == 'image' else 'Видео'
+                                if kind == 'video':
+                                    videos += 1
+                                    player = '<video controls playsinline preload="none" src="{0}">Браузер не поддерживает видео.</video>'.format(name)
+                                elif suffix in ['.jpg', '.png', '.gif', '.webp', '.bmp']:
+                                    photos += 1
+                                    player = '<a href="{0}" target="_blank" rel="noopener"><img loading="lazy" src="{0}" alt="Фото к заявлению"></a>'.format(name)
                                 else:
-                                    sections.append('<p><a href="{}">Фото</a></p>'.format(name))
+                                    photos += 1
+                                    player = '<div class="media-placeholder">Фото в исходном формате</div>'
+                                sections.append('<figure><div class="media-frame">{}</div><figcaption><span>{}</span><a href="{}" download>Скачать</a></figcaption></figure>'.format(player, label, name))
                             except (aiohttp.ClientError, TimeoutError, ValueError):
-                                sections.append('<p>Фото недоступно: исходная ссылка отсутствует или истекла.</p>')
-                    sections.append('</article>')
-                document = '<!doctype html><html lang="ru"><meta charset="utf-8"><title>Архив заявлений</title><style>body{font:16px system-ui;max-width:1000px;margin:30px auto;padding:16px}pre{white-space:pre-wrap;overflow-wrap:anywhere}img{max-width:100%;max-height:700px}article{border-bottom:1px solid #bbb;padding:16px 0}</style><h1>Архив заявлений</h1><p>Время — МСК. Для старых сообщений дата может быть неизвестна. Видео представлены отметками времени.</p>'+''.join(sections)+'</html>'
+                                unavailable += 1
+                                sections.append('<figure><div class="media-frame media-placeholder">Вложение недоступно</div><figcaption>Исходная ссылка отсутствует, истекла или файл не поддерживается.</figcaption></figure>')
+                    sections.append('</div></article>')
+                if previous is not None:
+                    sections.append('</section>')
+                template = (Path(__file__).parent/'report.html').read_text(encoding='utf-8')
+                replacements = {'PERIOD': html.escape(stamp(start)+' — '+stamp(end)), 'MONTHS': str(months),
+                    'CASES': str(len(navigation)), 'MESSAGES': str(len(messages)), 'PHOTOS': str(photos), 'VIDEOS': str(videos),
+                    'CONTENT': ''.join(sections) or '<div class="empty">За выбранный период сообщений нет.</div>',
+                    'NAVIGATION': ''.join(navigation), 'UNKNOWN': str(unknown_dates), 'UNAVAILABLE': str(unavailable)}
+                document = template
+                # User content is substituted last so it cannot create template directives.
+                for key in [key for key in replacements if key != 'CONTENT']+['CONTENT']:
+                    document = document.replace('{{'+key+'}}', replacements[key])
                 output.writestr('index.html', document.encode('utf-8'))
             archive.seek(0)
             async with api_client.post(api_url+'/uploads', params={'type': 'file'}, headers={'Authorization': bot_token}) as response:

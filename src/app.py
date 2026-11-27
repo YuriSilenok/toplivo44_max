@@ -409,7 +409,7 @@ def wifi(uid, text, attachments):
 
 def labor(uid, text, attachments, sent_at=0, source_mid=''):
     s, data = state(uid)
-    if text in ['Просмотр заявления', 'Выгрузить заявления'] or text.startswith('casepage:') or s == 'case_lookup':
+    if text in ['Просмотр заявления', 'Выгрузить заявления'] or text.startswith(('casepage:', 'exportmonths:')) or s in ['case_lookup', 'export_period']:
         if 'admin' not in roles(uid):
             state(uid, '')
             send(uid, 'Это действие доступно только администратору.')
@@ -423,9 +423,21 @@ def labor(uid, text, attachments, sent_at=0, source_mid=''):
             state(uid, 'case_lookup')
             cancel(uid, 'Введите номер заявления.')
         elif text == 'Выгрузить заявления':
-            state(uid, '')
-            Outbox.create(uid=str(uid), body=json.dumps({'text': 'Архив заявлений', '_labor_export': True}))
-            send(uid, 'Подготовлю ZIP: тексты, фото и время отправки сообщений с видео, сгруппированные по номеру заявления.')
+            state(uid, 'export_period')
+            send(uid, 'За сколько последних месяцев выгрузить отчёт? Выберите от 1 до 12.',
+                 [[button(str(n), 'exportmonths:'+str(n)) for n in range(start, start+3)] for start in [1, 4, 7, 10]]+[[button('Отмена')]])
+        elif s == 'export_period':
+            value = text.removeprefix('exportmonths:')
+            if not value.isdigit() or not 1 <= int(value) <= 12:
+                cancel(uid, 'Выберите число месяцев от 1 до 12.')
+            else:
+                months = int(value)
+                state(uid, '')
+                Outbox.create(uid=str(uid), body=json.dumps({'text': 'Архив заявлений', '_labor_export': True,
+                    '_export_months': months, '_export_end': time.time()}))
+                send(uid, 'Подготовлю отчёт за последние {} мес.: тексты, фото и видео с воспроизведением в HTML. Сообщения без сохранённой даты не включаются в период.'.format(months))
+        elif text.startswith('exportmonths:'):
+            send(uid, 'Выбор периода завершён или истёк. Нажмите «Выгрузить заявления» заново.', menu(uid))
         elif text.isdigit():
             show_case(uid, int(text))
             state(uid, '')
@@ -785,8 +797,10 @@ async def worker(app):
                     if KIND == 'labor' and outgoing.uid:
                         if payload.get('_labor_export'):
                             from labor_archive import export_archive
-                            token = await export_archive(client, os.environ.get('MAX_API_URL', 'https://platform-api2.max.ru'), TOKEN)
-                            payload = {'text': 'Архив заявлений: тексты, фото и время отправки видео.', '_admin_material': True,
+                            months = payload.get('_export_months', 12)
+                            token = await export_archive(client, os.environ.get('MAX_API_URL', 'https://platform-api2.max.ru'), TOKEN,
+                                                         months, payload.get('_export_end'))
+                            payload = {'text': 'Отчёт за {} мес. Распакуйте ZIP и откройте index.html: тексты, фото и видео. Сохраните структуру папок для воспроизведения.'.format(months), '_admin_material': True,
                                        'attachments': [{'type': 'file', 'payload': {'token': token}}]}
                             outgoing.body = json.dumps(payload, ensure_ascii=False)
                             outgoing.save()
