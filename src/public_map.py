@@ -33,11 +33,11 @@ def register_routes(application, kind):
             'Referrer-Policy': 'strict-origin-when-cross-origin'})
 
     async def data(request):
-        from app import Point, Report
+        from app import Point, latest_fuel_reports
         now = time.time()
         reports = {}
         if kind == 'fuel':
-            for report in Report.select().where((Report.source == 'portal') & (Report.updated <= now)):
+            for report in latest_fuel_reports().values():
                 if report.fuel in ['АИ-92', 'АИ-95', 'ДТ']:
                     reports.setdefault(report.station, {})[report.fuel] = report
         points = []
@@ -52,7 +52,9 @@ def register_routes(application, kind):
                 for brand, report in reports.get(point.id, {}).items():
                     status = extra.get('portal_status', {}).get(brand, {})
                     row['fuels'][brand] = dict(available=report.available,
-                        price=status.get('price'), updated=report.updated,
+                        price=status.get('price') if report.source == 'portal' else None, updated=report.updated,
+                        source='Оператор АЗС' if report.source == 'operator' else 'Портал',
+                        queue=('более 30 минут' if report.queue == 31 else '{} минут'.format(report.queue)) if report.source == 'operator' else '',
                         updated_text=datetime.fromtimestamp(report.updated, ZoneInfo('Europe/Moscow')).strftime('%d.%m.%Y %H:%M'),
                         stale=now-report.updated > 3600)
             else:

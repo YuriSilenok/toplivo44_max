@@ -451,9 +451,90 @@ def labor(uid, text, attachments):
     state(uid, 'contact_offer', {'case': case.id})
 
 
+def latest_fuel_reports():
+    """Newest report per station/brand; absence is selected before availability filtering."""
+    selected = {}
+    for report in Report.select().where((Report.updated <= time.time()) & (Report.source.in_(['portal', 'operator']))):
+        key = (report.station, report.fuel)
+        old = selected.get(key)
+        if old is None or (report.updated, report.source == 'operator') > (old.updated, old.source == 'operator'):
+            selected[key] = report
+    return selected
+
+
+def can_report(uid, station):
+    permissions = roles(uid)
+    return 'admin' in permissions or ('operator' in permissions and Assignment.select().where((Assignment.uid == str(uid)) & (Assignment.station == station)).exists())
+
+
+def report_prompt(uid, data):
+    if data['index'] >= len(data['fuels']):
+        state(uid, '')
+        send(uid, 'Все марки обработаны. Сведения сохранены.', menu(uid))
+        return
+    station = Point.get_by_id(data['station'])
+    state(uid, 'report_available', data)
+    send(uid, '{}\n{} — наличие топлива?'.format(station.address, data['fuels'][data['index']]),
+         [[button('Есть')], [button('Нет')], [button('Отмена')]])
+
+
+def save_operator_report(uid, data, available, queue):
+    brand = data['fuels'][data['index']]
+    now = time.time()
+    Report.insert(station=data['station'], fuel=brand, source='operator', available=available, queue=queue, updated=now).on_conflict(
+        conflict_target=[Report.station, Report.fuel, Report.source],
+        update={Report.available: available, Report.queue: queue, Report.updated: now}).execute()
+    send(uid, 'Сохранено: {} — {}{}. Время: {} МСК.'.format(brand, 'есть' if available else 'нет',
+         ', очередь '+('более 30 минут' if queue == 31 else str(queue)+' минут') if available else '',
+         time.strftime('%d.%m.%Y %H:%M', time.localtime(now))))
+    data['index'] += 1
+    report_prompt(uid, data)
+
+
 def fuel(uid, text, attachments):
     s, data = state(uid)
     r = roles(uid)
+    if text == 'Обновить сведения':
+        if not r & {'operator', 'admin'}:
+            send(uid, 'Это действие доступно только оператору.')
+            return
+        assigned = {a.station for a in Assignment.select().where(Assignment.uid == str(uid))}
+        stations = list(Point.select() if 'admin' in r else Point.select().where(Point.id.in_(assigned)))
+        if not stations:
+            send(uid, 'К вам пока не привязаны АЗС. Обратитесь к администратору.', menu(uid))
+            return
+        state(uid, 'report_station')
+        cancel(uid, 'Введите ID АЗС для обновления:\n'+'\n'.join('{}: {}'.format(p.id, p.address) for p in stations)[:3400])
+        return
+    if s.startswith('report_'):
+        if s == 'report_station':
+            if not text.isdigit():
+                send(uid, 'Введите числовой ID АЗС из списка или нажмите «Отмена».')
+                return
+            station = Point.get_or_none(Point.id == int(text))
+            if not station or not can_report(uid, station.id):
+                send(uid, 'АЗС не найдена или не привязана к вам. Выберите АЗС из списка.')
+                return
+            fuels = [f for f in FUELS if f in json.loads(station.extra).get('fuels', FUELS)]
+            report_prompt(uid, {'station': station.id, 'fuels': fuels or list(FUELS), 'index': 0})
+        elif not can_report(uid, data['station']):
+            state(uid, '')
+            send(uid, 'Нет прав на обновление этой АЗС.', menu(uid))
+        elif s == 'report_available':
+            if text == 'Нет':
+                save_operator_report(uid, data, False, 0)
+            elif text == 'Есть':
+                state(uid, 'report_queue', data)
+                send(uid, 'Выберите очередь в минутах.', [[button(v) for v in ['0', '5', '10']],
+                     [button(v) for v in ['15', '20', 'Более 30']], [button('Отмена')]])
+            else:
+                send(uid, 'Выберите «Есть» или «Нет».')
+        elif s == 'report_queue':
+            if text not in ['0', '5', '10', '15', '20', 'Более 30']:
+                send(uid, 'Выберите очередь кнопкой.')
+            else:
+                save_operator_report(uid, data, True, 31 if text == 'Более 30' else int(text))
+        return
     if text == 'Найти топливо':
         state(uid, 'fuel_search')
         send(uid, 'Отправьте координаты, затем выберите марку топлива.', [[geo()], [button(f) for f in FUELS]])
@@ -469,7 +550,7 @@ def fuel(uid, text, attachments):
             send(uid, 'Сначала отправьте свои координаты.', [[geo()]])
             return
         now = time.time()
-        latest = Report.select().where((Report.fuel == text) & (Report.updated <= now) & (Report.available == True) & (Report.source == 'portal'))
+        latest = [report for (station, brand), report in latest_fuel_reports().items() if brand == text and report.available]
         ps = []
         for report in latest:
             p = Point.get_or_none(Point.id == report.station)
@@ -481,17 +562,20 @@ def fuel(uid, text, attachments):
         for _, p, report in ps[:3]:
             stamp = time.strftime('%d.%m %H:%M', time.localtime(report.updated))
             extra = json.loads(p.extra)
-            status = extra.get('portal_status', {}).get(text, {})
-            queue = extra.get('queue_text') or ('нет данных' if report.queue < 0 else '{} минут'.format(report.queue))
+            operator_report = report.source == 'operator'
+            status = {} if operator_report else extra.get('portal_status', {}).get(text, {})
+            queue = ('более 30 минут' if report.queue == 31 else '{} минут'.format(report.queue)) if operator_report else extra.get('queue_text') or ('нет данных' if report.queue < 0 else '{} минут'.format(report.queue))
             lines = [p.name, p.address, 'Марка: '+text]
             if status.get('price') is not None:
                 lines.append('Цена на портале: {:g} ₽'.format(status['price']))
-            if extra.get('availability_basis') == 'published_price':
+            if operator_report:
+                lines.append('Источник: оператор АЗС. Топливо есть по сведениям оператора.')
+            elif extra.get('availability_basis') == 'published_price':
                 lines.append('Топливо есть по данным портала.')
             if queue.strip().casefold() == 'нет':
                 lines.append('Очереди нет.')
             else:
-                lines.append('Очередь по данным портала: '+queue)
+                lines.append(('Очередь со слов оператора: ' if operator_report else 'Очередь по данным портала: ')+queue)
             if extra.get('restrictions'):
                 restriction = extra['restrictions']
                 selected = next((part.split(':', 1)[1].strip() for part in restriction.split(',') if part.split(':', 1)[0].strip() == text and ':' in part), None)
@@ -527,12 +611,6 @@ def fuel(uid, text, attachments):
             Setting.replace(key=key, value=str(time.time())).execute()
         state(uid, '')
         send(uid, 'Спасибо. Информация принята для проверки оператором.', menu(uid))
-        return
-    if text == 'Обновить сведения':
-        if not r & {'operator', 'admin'}:
-            send(uid, 'Это действие доступно только оператору.')
-        else:
-            send(uid, 'Сведения обновляются в едином источнике — на портале https://toplivo.kostroma.gov.ru/. Бот получает их автоматически каждые 5 минут.', menu(uid))
         return
     if text == 'Добавить АЗС':
         if 'admin' not in r:

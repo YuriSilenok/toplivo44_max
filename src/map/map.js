@@ -14,9 +14,10 @@ function card(p,popup=false){
   const reports=brands.map(brand=>p.fuels[brand]).filter(Boolean);
   const sharedDate=reports.length&&reports.every(f=>f.updated_text===reports[0].updated_text);
   for(const brand of brands){const f=p.fuels[brand];box.append(node('p',brand+': '+(!f?'нет сведений':f.available?'есть'+(f.price!=null?' · '+f.price+' ₽':''):'наличие не подтверждено')));if(f&&!sharedDate)box.append(node('p','Обновлено: '+f.updated_text+' МСК'));}
+  for(const brand of brands){const f=p.fuels[brand];if(f?.source==='Оператор АЗС')box.append(node('p',brand+' — оператор АЗС'+(f.available&&f.queue?', очередь: '+f.queue:'')));}
   if(sharedDate)box.append(node('p','Обновлено источником: '+reports[0].updated_text+' МСК'));
   if(reports.some(f=>f.stale))box.append(node('p','Сведения старше часа; наличие могло измениться.','warning'));
-  if(p.queue)box.append(node('p',p.queue.trim().toLowerCase()==='нет'?'Очереди нет.':'Очередь: '+p.queue));
+  if(p.queue&&reports.some(f=>f.source!=='Оператор АЗС'))box.append(node('p',p.queue.trim().toLowerCase()==='нет'?'Очереди нет (портал).':'Очередь по данным портала: '+p.queue));
   if(p.restrictions)box.append(node('p','Ограничения объёма в одни руки: '+p.restrictions));
  }
  if(!popup&&map){const b=node('button','На карте');b.type='button';b.onclick=()=>{map.setView([p.latitude,p.longitude],16);markers.get(p.id)?.openPopup();};box.append(b);}
