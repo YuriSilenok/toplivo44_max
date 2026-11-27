@@ -96,6 +96,9 @@ class CaseMessage(Base):
     body = TextField()
     media = TextField(default='[]')
     delivered = BooleanField(default=False)
+    sent_at = FloatField(default=0)
+    source_mid = TextField(default='')
+    original_text = TextField(default='')
 
 
 class Inbox(Base):
@@ -121,6 +124,14 @@ class Setting(Base):
 MODELS = [Role, Session, Invite, Point, Assignment, Report, Witness, Case, CaseMessage, Inbox, Outbox, Setting]
 db.connect()
 db.create_tables(MODELS)
+if KIND == 'labor':
+    columns = {column.name for column in db.get_columns('casemessage')}
+    if 'sent_at' not in columns:
+        db.execute_sql('ALTER TABLE casemessage ADD COLUMN sent_at REAL NOT NULL DEFAULT 0')
+    if 'source_mid' not in columns:
+        db.execute_sql("ALTER TABLE casemessage ADD COLUMN source_mid TEXT NOT NULL DEFAULT ''")
+    if 'original_text' not in columns:
+        db.execute_sql("ALTER TABLE casemessage ADD COLUMN original_text TEXT NOT NULL DEFAULT ''")
 # Bootstrap is an explicit operator configuration, never 'first user wins'.
 for uid in os.environ.get('ADMIN_IDS', '').split(','):
     if uid.strip():
@@ -154,6 +165,7 @@ def menu(uid):
     r = roles(uid)
     if KIND == 'labor':
         return [[button('Создать приглашение', '/invite')],
+                [button('Просмотр заявления')], [button('Выгрузить заявления')],
                 [button('Снять администратора')], [button('Список ролей')]] if 'admin' in r else []
     if KIND == 'wifi':
         rows = []
@@ -395,12 +407,40 @@ def wifi(uid, text, attachments):
     send(uid, 'Не удалось распознать геоточку. Отправьте свою геолокацию.', menu(uid))
 
 
-def labor(uid, text, attachments):
+def labor(uid, text, attachments, sent_at=0, source_mid=''):
     s, data = state(uid)
+    if text in ['Просмотр заявления', 'Выгрузить заявления'] or text.startswith('casepage:') or s == 'case_lookup':
+        if 'admin' not in roles(uid):
+            state(uid, '')
+            send(uid, 'Это действие доступно только администратору.')
+            return
+        from labor_archive import show_case
+        if text.startswith('casepage:'):
+            parts = text.split(':')
+            if len(parts) == 3 and parts[1].isdigit() and parts[2].isdigit():
+                show_case(uid, int(parts[1]), int(parts[2]))
+        elif text == 'Просмотр заявления':
+            state(uid, 'case_lookup')
+            cancel(uid, 'Введите номер заявления.')
+        elif text == 'Выгрузить заявления':
+            state(uid, '')
+            Outbox.create(uid=str(uid), body=json.dumps({'text': 'Архив заявлений', '_labor_export': True}))
+            send(uid, 'Подготовлю ZIP: тексты, фото и время отправки сообщений с видео, сгруппированные по номеру заявления.')
+        elif text.isdigit():
+            show_case(uid, int(text))
+            state(uid, '')
+        else:
+            cancel(uid, 'Введите числовой номер заявления.')
+        return
     if 'admin' in roles(uid):
         send(uid, 'Вы получаете заявления. Ответы по существу через бота не предусмотрены.', menu(uid))
         return
-    if s == 'contact_entry':
+    from labor_media import normalize
+    media, rejected_media = normalize(attachments)
+    if rejected_media:
+        logging.warning('Labor media unsupported: %s attachments', rejected_media)
+        send(uid, 'Не удалось обработать часть фото или видео. Отправьте их заново отдельным сообщением.')
+    if s == 'contact_entry' and not media:
         state(uid, 'contact_confirm', dict(data, contacts=text[:1500]))
         send(uid, 'Указанные вами данные будут переданы вместе с заявлением. Без них обращение останется анонимным и ответ вы не получите.\n\n'+text[:1500], [[button('Согласен передать контакты')], [button('Остаться анонимным')]])
         return
@@ -428,10 +468,6 @@ def labor(uid, text, attachments):
     if text in ['Хочу получить ответ лично', 'Согласен передать контакты']:
         send(uid, 'Диалог завершён или истёк. Отправьте материалы обращения заново, чтобы выбрать передачу контактов.')
         return
-    media = []
-    for a in attachments:
-        if a.get('type') in ['image', 'video'] and a.get('payload', {}).get('token'):
-            media.append({'type': a['type'], 'payload': {'token': a['payload']['token']}})
     if not text and not media:
         send(uid, 'Отправьте текст, фото или видео.')
         return
@@ -443,10 +479,11 @@ def labor(uid, text, attachments):
     body = 'Заявление №{}{}\nСодержание: {}'.format(case.id, ' (продолжение)' if continuation else '', text[:3300])
     if case.contacts:
         body += '\nКонтакты предоставлены добровольно:\n'+case.contacts
-    CaseMessage.create(case_id=case.id, body=body[:4000], media=json.dumps(media), delivered=bool(admins))
+    CaseMessage.create(case_id=case.id, body=body[:4000], media=json.dumps(media), delivered=bool(admins), sent_at=sent_at, source_mid=source_mid, original_text=text)
     for a in admins:
         # No forwarding: sender, source message id, geolocation and timestamps never leave this application.
-        send(a.uid, body[:4000], attachments=media)
+        for offset in range(0, max(1, len(media)), 12):
+            send(a.uid, body[:4000], attachments=media[offset:offset+12])
     send(uid, 'Заявление №{} принято. Материалы будут переданы администраторам.'.format(case.id), [[button('Хочу получить ответ лично')], [button('Остаться анонимным')]])
     state(uid, 'contact_offer', {'case': case.id})
 
@@ -687,7 +724,12 @@ def dispatch(update):
     try:
         if admin_state(uid, text, s, data):
             return
-        {'wifi': wifi, 'fuel': fuel, 'labor': labor}[KIND](uid, text, attachments)
+        if KIND == 'labor':
+            stamp = msg.get('timestamp')
+            stamp = float(stamp)/1000 if isinstance(stamp, (int, float)) and math.isfinite(stamp) and stamp > 0 else 0
+            labor(uid, text, attachments, stamp, body.get('mid') or '')
+        else:
+            {'wifi': wifi, 'fuel': fuel}[KIND](uid, text, attachments)
     except (ValueError, KeyError, TypeError, Point.DoesNotExist):
         send(uid, 'Проверьте формат данных и повторите ввод или нажмите «Отмена».', [[button('Отмена')]])
 
@@ -728,7 +770,7 @@ async def worker(app):
             outgoing = Outbox.select().where(Outbox.due <= time.time()).order_by(Outbox.id).first()
             if outgoing:
                 payload = json.loads(outgoing.body)
-                case_material = payload.get('text', '').startswith('Заявление №') and ('\nСодержание:' in payload.get('text', '') or '\nКонтакты предоставлены' in payload.get('text', ''))
+                case_material = payload.get('_labor_export') or payload.get('_admin_material') or (payload.get('text', '').startswith('Заявление №') and ('\nСодержание:' in payload.get('text', '') or '\nКонтакты предоставлены' in payload.get('text', '')))
                 if KIND == 'labor' and case_material and 'admin' not in roles(outgoing.uid):
                     # Retain queued materials, but never deliver them without current access.
                     outgoing.due = time.time()+3600
@@ -740,10 +782,29 @@ async def worker(app):
                 if not outgoing.uid:
                     payload = {'notification': 'Принято'}
                 try:
-                    async with client.request('PUT' if edit_mid else 'POST', os.environ.get('MAX_API_URL', 'https://platform-api2.max.ru')+path, params=params, headers={'Authorization': TOKEN}, json=payload) as response:
+                    if KIND == 'labor' and outgoing.uid:
+                        if payload.get('_labor_export'):
+                            from labor_archive import export_archive
+                            token = await export_archive(client, os.environ.get('MAX_API_URL', 'https://platform-api2.max.ru'), TOKEN)
+                            payload = {'text': 'Архив заявлений: тексты, фото и время отправки видео.', '_admin_material': True,
+                                       'attachments': [{'type': 'file', 'payload': {'token': token}}]}
+                            outgoing.body = json.dumps(payload, ensure_ascii=False)
+                            outgoing.save()
+                        from labor_media import prepare
+                        if await prepare(payload, client, os.environ.get('MAX_API_URL', 'https://platform-api2.max.ru'), TOKEN):
+                            outgoing.body = json.dumps(payload, ensure_ascii=False)
+                            outgoing.save()
+                    wire_payload = {key: value for key, value in payload.items() if not key.startswith('_')}
+                    if 'attachments' in wire_payload:
+                        wire_payload['attachments'] = [{key: value for key, value in attachment.items() if not key.startswith('_')} for attachment in wire_payload['attachments']]
+                    if KIND == 'labor' and case_material and 'admin' not in roles(outgoing.uid):
+                        outgoing.due = time.time()+3600
+                        outgoing.save()
+                        continue
+                    async with client.request('PUT' if edit_mid else 'POST', os.environ.get('MAX_API_URL', 'https://platform-api2.max.ru')+path, params=params, headers={'Authorization': TOKEN}, json=wire_payload) as response:
                         if response.status >= 400:
                             logging.error('MAX delivery HTTP %s for queue %s', response.status, outgoing.id)
-                            if not outgoing.uid or response.status in [403, 404]:
+                            if not outgoing.uid or (response.status in [403, 404] and not (KIND == 'labor' and case_material)):
                                 outgoing.delete_instance()
                             else:
                                 outgoing.attempts += 1
@@ -751,7 +812,8 @@ async def worker(app):
                                 outgoing.save()
                         else:
                             outgoing.delete_instance()
-                except (aiohttp.ClientError, asyncio.TimeoutError):
+                except (aiohttp.ClientError, asyncio.TimeoutError, ValueError, OSError) as error:
+                    logging.warning('MAX delivery deferred: %s for queue %s', type(error).__name__, outgoing.id)
                     outgoing.due = time.time()+30
                     outgoing.save()
                 await asyncio.sleep(.55)
