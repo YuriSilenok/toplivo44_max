@@ -21,6 +21,14 @@ def stamp(value):
     return datetime.fromtimestamp(value, ZoneInfo('Europe/Moscow')).strftime('%d.%m.%Y %H:%M:%S МСК') if value else 'время неизвестно'
 
 
+def message_stamp(message):
+    from app import Setting
+    manual = Setting.get_or_none(Setting.key == 'labor-manual-date:'+str(message.id))
+    if manual:
+        return datetime.fromisoformat(manual.value).strftime('%d.%m.%Y')+' (дата указана вручную; время неизвестно)'
+    return stamp(message.sent_at)
+
+
 def message_text(message):
     if not message.original_text:
         return message.body
@@ -39,12 +47,12 @@ def show_case(uid, number, offset=0):
         return
     offset = max(0, min(offset, max(0, count-1)))
     for message in query.offset(offset).limit(10):
-        text = 'Время отправки: '+stamp(message.sent_at)+'\n'+message_text(message)
+        text = 'Дата сообщения: '+message_stamp(message)+'\n'+message_text(message)
         media = json.loads(message.media)
         for start in range(0, len(text), 3800):
             Outbox.create(uid=str(uid), body=json.dumps({'text': text[start:start+3800], '_admin_material': True}, ensure_ascii=False))
         for start in range(0, len(media), 12):
-            Outbox.create(uid=str(uid), body=json.dumps({'text': 'Заявление №{}\nМатериалы, отправлены: {}'.format(number, stamp(message.sent_at)),
+            Outbox.create(uid=str(uid), body=json.dumps({'text': 'Заявление №{}\nДата материалов: {}'.format(number, message_stamp(message)),
                 'attachments': media[start:start+12], '_admin_material': True}, ensure_ascii=False))
     rows = [[button('Далее', 'casepage:{}:{}'.format(number, offset+10))]] if offset+10 < count else None
     send(uid, 'Заявление №{}: сообщения {}–{} из {}.'.format(number, offset+1, min(offset+10, count), count), rows)
@@ -127,7 +135,7 @@ async def export_archive(api_client, api_url, bot_token, months=12, end=None):
                         sections.append('<section class="case" id="case-{0}" data-case="{0}"><div class="case-heading"><span class="eyebrow">Материалы обращения</span><h2>Заявление №{0}</h2></div>'.format(message.case_id))
                         navigation.append('<a href="#case-{0}">№{0}</a>'.format(message.case_id))
                         previous = message.case_id
-                    sections.append('<article class="message"><div class="message-date">{}</div><pre>{}</pre><div class="media-grid">'.format(html.escape(stamp(message.sent_at)), html.escape(message_text(message))))
+                    sections.append('<article class="message"><div class="message-date">{}</div><pre>{}</pre><div class="media-grid">'.format(html.escape(message_stamp(message)), html.escape(message_text(message))))
                     media = json.loads(message.media)
                     fresh = {'image': [], 'video': []}
                     if media and message.source_mid:
