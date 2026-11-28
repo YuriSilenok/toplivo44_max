@@ -71,7 +71,9 @@ def stale_rows(uid, now=None):
     assigned = {a.station for a in Assignment.select().where(Assignment.uid == str(uid))} if permissions & {'operator','admin'} else set()
     rows = []
     for p in Point.select():
-        newest=Report.select().where((Report.station == p.id) & (Report.source.in_(['portal','operator'])) & (Report.updated <= now)).order_by(Report.updated.desc()).first()
+        # Match the importer's five-minute source-clock tolerance. Otherwise a
+        # newly accepted record briefly disappears and is reported as missing.
+        newest=Report.select().where((Report.station == p.id) & (Report.source.in_(['portal','operator'])) & (Report.updated <= now+300)).order_by(Report.updated.desc()).first()
         updated = newest.updated if newest else None
         age = now-updated if updated is not None else float('inf')
         if ('admin' in permissions and age > 7200) or (p.id in assigned and age > 3600):

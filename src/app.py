@@ -503,7 +503,7 @@ def labor(uid, text, attachments, sent_at=0, source_mid=''):
 def latest_fuel_reports():
     """Newest report per station/brand; absence is selected before availability filtering."""
     selected = {}
-    for report in Report.select().where((Report.updated <= time.time()) & (Report.source.in_(['portal', 'operator']))):
+    for report in Report.select().where((Report.updated <= time.time()+300) & (Report.source.in_(['portal', 'operator']))):
         key = (report.station, report.fuel)
         old = selected.get(key)
         if old is None or (report.updated, report.source == 'operator') > (old.updated, old.source == 'operator'):
